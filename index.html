@@ -74,7 +74,10 @@
             POWER_UP_SPAWN_RATE: 0.01,
             SHOOT_COOLDOWN: 200,
             TARGET_FPS: 60,
-            TITLE_Y: 150 // Position for the title
+            TITLE_Y: 150,
+            TITLE_HELI_SIZE: 32,
+            TITLE_HELI_SPEED: 2,
+            MAX_SQUADRON_SIZE: 4 // Limit maximum helicopters
         };
 
         // Mobile device detection
@@ -163,29 +166,34 @@
 
         // Game Classes
         class EmojiCluster {
-            constructor(isLarge = false) {
+            constructor(isBoss = false) {
                 this.x = Math.random() * canvas.logicalWidth;
                 this.y = -50;
                 this.speed = (1 + Math.random() * 2) * gameState.difficulty;
-                this.size = 30;
+                this.size = isBoss ? 35 : 30;
                 this.emojis = [];
+                this.isBoss = isBoss;
                 
                 // More balanced screen size scaling
                 const screenSizeFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 1000));
-                const baseClusterSize = isLarge ? 25 : 8;
+                const baseClusterSize = isBoss ? 15 : 8; // Reduced from 35 to 15 for boss clusters
                 const clusterSize = Math.max(2, Math.floor(baseClusterSize * screenSizeFactor));
                 
                 // Adjusted spread scaling
                 const spreadFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 800));
-                const maxSpread = isLarge ? 200 : 60;
+                const maxSpread = isBoss ? 150 : 60; // Reduced from 250 to 150
+                
+                // Boss clusters get more dangerous emojis
+                const emojiPool = isBoss ? ['🔥', '👻', '🤖', '💀', '👾', '🎃'] : emojiList;
                 
                 for (let i = 0; i < clusterSize; i++) {
-                    const emoji = emojiList[Math.floor(Math.random() * emojiList.length)];
+                    const emoji = emojiPool[Math.floor(Math.random() * emojiPool.length)];
                     this.emojis.push({
                         emoji: emoji,
-                        color: emojiColors[emoji],
+                        color: emojiColors[emoji] || '#ff4444',
                         offsetX: (Math.random() - 0.5) * (maxSpread * spreadFactor),
-                        offsetY: (Math.random() - 0.5) * (maxSpread * spreadFactor)
+                        offsetY: (Math.random() - 0.5) * (maxSpread * spreadFactor),
+                        health: isBoss ? 2 : 1
                     });
                 }
             }
@@ -195,6 +203,7 @@
                 ctx.font = `${this.size}px Arial`;
                 this.emojis.forEach(e => {
                     ctx.fillStyle = e.color;
+                    // Removed expensive shadow effects for boss clusters
                     ctx.fillText(e.emoji, this.x + e.offsetX, this.y + e.offsetY);
                 });
                 ctx.restore();
@@ -382,23 +391,37 @@
 
         // Game Logic Functions
         function spawnEmojiCluster() {
-            // More balanced spawn rate scaling
             const screenSizeFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 1000));
             const baseSpawnRate = GAME_CONSTANTS.SPAWN_RATE;
-            const adjustedSpawnRate = baseSpawnRate * screenSizeFactor;
+            
+            // Reduced spawn rate scaling
+            const squadronMultiplier = 1 + (gameState.heliSquadron.length - 1) * 0.2; // Reduced from 0.3
+            const adjustedSpawnRate = baseSpawnRate * screenSizeFactor * squadronMultiplier;
             
             if (Math.random() < adjustedSpawnRate) {
-                gameState.emojiClusters.push(new EmojiCluster(Math.random() < 0.25));
+                const bossChance = Math.min(0.2, gameState.heliSquadron.length * 0.08); // Reduced boss chance
+                const isBossCluster = Math.random() < bossChance;
+                
+                const cluster = new EmojiCluster(isBossCluster);
+                
+                // Reduced speed scaling
+                cluster.speed *= (1 + (gameState.heliSquadron.length - 1) * 0.15); // Reduced from 0.2
+                
+                gameState.emojiClusters.push(cluster);
             }
         }
 
         function spawnPowerUp() {
-            // Adjusted power-up spawn rate
+            // Reduce power-up spawn rate as squadron grows
+            const squadronPenalty = Math.max(0.2, 1 - (gameState.heliSquadron.length - 1) * 0.3);
             const screenSizeFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 1000));
             const baseSpawnRate = GAME_CONSTANTS.POWER_UP_SPAWN_RATE;
-            const adjustedSpawnRate = baseSpawnRate * (1 + (1 - screenSizeFactor) * 0.3);
+            const adjustedSpawnRate = baseSpawnRate * (1 + (1 - screenSizeFactor) * 0.3) * squadronPenalty;
             
-            if (Math.random() < adjustedSpawnRate && gameState.powerUps.length < 1) {
+            // Only spawn if below max squadron size
+            if (Math.random() < adjustedSpawnRate && 
+                gameState.powerUps.length < 1 && 
+                gameState.heliSquadron.length < GAME_CONSTANTS.MAX_SQUADRON_SIZE) {
                 gameState.powerUps.push(new PowerUp());
             }
         }
@@ -497,11 +520,21 @@
                             
                             // If bullet is within emoji's circular hit area
                             if (distance < cluster.size) {
-                                cluster.emojis.splice(obj.emoji, 1);
+                                // For boss emojis, reduce health instead of immediate destruction
+                                if (cluster.isBoss && e.health > 1) {
+                                    e.health--;
+                                    createExplosion(emojiX, emojiY, e.color, 10); // Smaller hit effect
+                                } else {
+                                    cluster.emojis.splice(obj.emoji, 1);
+                                    createExplosion(emojiX, emojiY, e.color, 20);
+                                    gameState.score++;
+                                    // Extra score for boss emoji
+                                    if (cluster.isBoss) {
+                                        gameState.score += 2;
+                                    }
+                                    updateScore();
+                                }
                                 gameState.bullets.splice(bulletIndex, 1);
-                                createExplosion(emojiX, emojiY, e.color, 20);
-                                gameState.score++;
-                                updateScore();
                                 if (cluster.emojis.length === 0) {
                                     gameState.emojiClusters.splice(obj.cluster, 1);
                                 }
@@ -557,6 +590,19 @@
             gameState.powerUps = [];
             gameState.heliSquadron = [];
             gameState.particles = [];
+
+            // Reset title helicopters
+            titleState.leftHelis = [
+                { x: -50, y: GAME_CONSTANTS.TITLE_Y - 30, offset: 0 },
+                { x: -100, y: GAME_CONSTANTS.TITLE_Y, offset: Math.PI },
+                { x: -150, y: GAME_CONSTANTS.TITLE_Y + 30, offset: Math.PI / 2 }
+            ];
+            titleState.rightHelis = [
+                { x: canvas.logicalWidth + 50, y: GAME_CONSTANTS.TITLE_Y - 30, offset: Math.PI },
+                { x: canvas.logicalWidth + 100, y: GAME_CONSTANTS.TITLE_Y, offset: 0 },
+                { x: canvas.logicalWidth + 150, y: GAME_CONSTANTS.TITLE_Y + 30, offset: Math.PI / 2 }
+            ];
+            
             addHelicopter(); // Start with one helicopter
             gameState.active = true;
             gameState.difficulty = 1;
@@ -631,10 +677,28 @@
         const targetFPS = 60;
         const frameInterval = 1000 / targetFPS;
 
+        // Add title animation state
+        const titleState = {
+            leftHelis: [
+                { x: -50, y: GAME_CONSTANTS.TITLE_Y - 30, offset: 0 },
+                { x: -100, y: GAME_CONSTANTS.TITLE_Y, offset: Math.PI },
+                { x: -150, y: GAME_CONSTANTS.TITLE_Y + 30, offset: Math.PI / 2 }
+            ],
+            rightHelis: [
+                { x: canvas.logicalWidth + 50, y: GAME_CONSTANTS.TITLE_Y - 30, offset: Math.PI },
+                { x: canvas.logicalWidth + 100, y: GAME_CONSTANTS.TITLE_Y, offset: 0 },
+                { x: canvas.logicalWidth + 150, y: GAME_CONSTANTS.TITLE_Y + 30, offset: Math.PI / 2 }
+            ],
+            time: 0
+        };
+
         function drawTitle() {
             const titleY = GAME_CONSTANTS.TITLE_Y;
             ctx.save();
             
+            // Update animation time
+            titleState.time += 0.016; // Approximately 60fps
+
             // Draw main title
             ctx.font = 'bold 48px Arial';
             ctx.textAlign = 'center';
@@ -665,11 +729,38 @@
             ctx.font = 'bold italic 36px Arial';
             ctx.fillStyle = '#ff4444';
             ctx.fillText('NOW', canvas.logicalWidth / 2, titleY + 45);
-            
-            // Draw helicopter icons
-            ctx.font = '32px Arial';
-            ctx.fillText('🚁', canvas.logicalWidth / 2 - 120, titleY);
-            ctx.fillText('🚁', canvas.logicalWidth / 2 + 120, titleY);
+
+            // Animate helicopters
+            ctx.font = `${GAME_CONSTANTS.TITLE_HELI_SIZE}px Arial`;
+            ctx.shadowBlur = 5;
+            ctx.fillStyle = '#ff4444';
+
+            // Update and draw left helicopters
+            titleState.leftHelis.forEach(heli => {
+                // Move helicopters
+                if (heli.x < canvas.logicalWidth / 2 - 120) {
+                    heli.x += GAME_CONSTANTS.TITLE_HELI_SPEED;
+                }
+                // Add hovering effect
+                const hoverY = heli.y + Math.sin(titleState.time * 3 + heli.offset) * 5;
+                
+                // Draw flipped helicopter for left side
+                ctx.save();
+                ctx.scale(-1, 1); // Flip horizontally
+                ctx.fillText('🚁', -heli.x, hoverY); // Note the negative x position
+                ctx.restore();
+            });
+
+            // Update and draw right helicopters
+            titleState.rightHelis.forEach(heli => {
+                // Move helicopters
+                if (heli.x > canvas.logicalWidth / 2 + 120) {
+                    heli.x -= GAME_CONSTANTS.TITLE_HELI_SPEED;
+                }
+                // Add hovering effect
+                const hoverY = heli.y + Math.sin(titleState.time * 3 + heli.offset) * 5;
+                ctx.fillText('🚁', heli.x, hoverY);
+            });
             
             ctx.restore();
         }
@@ -721,32 +812,40 @@
         }
 
         // Event Listeners
+        let touchActive = false;
+        
+        function cleanupTouch() {
+            touchActive = false;
+            lastTouchX = null;
+            lastHeliX = null;
+        }
+
         canvas.addEventListener('pointermove', (e) => {
-            if (gameState.active && gameState.heliSquadron.length > 0) {
-                const rect = canvas.getBoundingClientRect();
-                const dpr = window.devicePixelRatio || 1;
+            if (!gameState.active || !gameState.heliSquadron.length || touchActive) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            
+            // Calculate the pointer position relative to the canvas, accounting for scaling
+            const pointerX = ((e.clientX - rect.left) / rect.width) * canvas.logicalWidth;
+            
+            // Different handling for single helicopter vs squadron
+            if (gameState.heliSquadron.length === 1) {
+                // For single helicopter, just keep it within screen bounds
+                const maxX = canvas.logicalWidth - 25; // Only small offset to keep helicopter visible
+                const targetX = Math.max(25, Math.min(maxX, pointerX));
+                gameState.heliSquadron[0].setTarget(targetX, gameState.heliSquadron[0].targetY);
+            } else {
+                // Squadron formation handling
+                const squadronWidth = (gameState.heliSquadron.length - 1) * GAME_CONSTANTS.SQUADRON_SPACING;
+                const maxX = canvas.logicalWidth - squadronWidth - 25;
+                const minX = 25;
+                const leaderX = Math.max(minX, Math.min(maxX, pointerX));
                 
-                // Calculate the pointer position relative to the canvas, accounting for scaling
-                const pointerX = ((e.clientX - rect.left) / rect.width) * canvas.logicalWidth;
-                
-                // Different handling for single helicopter vs squadron
-                if (gameState.heliSquadron.length === 1) {
-                    // For single helicopter, just keep it within screen bounds
-                    const maxX = canvas.logicalWidth - 25; // Only small offset to keep helicopter visible
-                    const targetX = Math.max(25, Math.min(maxX, pointerX));
-                    gameState.heliSquadron[0].setTarget(targetX, gameState.heliSquadron[0].targetY);
-                } else {
-                    // Squadron formation handling
-                    const squadronWidth = (gameState.heliSquadron.length - 1) * GAME_CONSTANTS.SQUADRON_SPACING;
-                    const maxX = canvas.logicalWidth - squadronWidth - 25;
-                    const minX = 25;
-                    const leaderX = Math.max(minX, Math.min(maxX, pointerX));
-                    
-                    gameState.heliSquadron.forEach((heli, index) => {
-                        const targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
-                        heli.setTarget(targetX, heli.targetY);
-                    });
-                }
+                gameState.heliSquadron.forEach((heli, index) => {
+                    const targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
+                    heli.setTarget(targetX, heli.targetY);
+                });
             }
         });
 
@@ -755,54 +854,81 @@
             let lastTouchX = null;
             let lastHeliX = null;
             
+            // Handle touch start
             canvas.addEventListener('touchstart', (e) => {
                 e.preventDefault();
-                if (!gameState.active || !gameState.heliSquadron.length) return;
+                if (!gameState.active || !gameState.heliSquadron.length) {
+                    handleInteraction(e);
+                    return;
+                }
                 
+                touchActive = true;
                 const touch = e.touches[0];
-                const rect = canvas.getBoundingClientRect();
                 lastTouchX = touch.clientX;
                 lastHeliX = gameState.heliSquadron[0].x;
             }, { passive: false });
 
+            // Handle touch move
             canvas.addEventListener('touchmove', (e) => {
                 e.preventDefault();
-                if (!gameState.active || !gameState.heliSquadron.length || lastTouchX === null || lastHeliX === null) return;
+                if (!gameState.active || !gameState.heliSquadron.length || !touchActive || lastTouchX === null || lastHeliX === null) return;
 
                 const touch = e.touches[0];
-                const deltaX = touch.clientX - lastTouchX;
-                const sensitivity = 1.5; // Slightly increased sensitivity for smoother movement
-                
-                if (gameState.heliSquadron.length === 1) {
-                    const heli = gameState.heliSquadron[0];
-                    const newTargetX = lastHeliX + (deltaX * sensitivity);
-                    const maxX = canvas.logicalWidth - 25;
-                    heli.targetX = Math.max(25, Math.min(maxX, newTargetX));
-                    lastHeliX = heli.targetX;
-                } else {
-                    const leader = gameState.heliSquadron[0];
-                    const squadronWidth = (gameState.heliSquadron.length - 1) * GAME_CONSTANTS.SQUADRON_SPACING;
-                    const maxX = canvas.logicalWidth - squadronWidth - 25;
-                    const newLeaderX = lastHeliX + (deltaX * sensitivity);
-                    const leaderX = Math.max(25, Math.min(maxX, newLeaderX));
-                    
-                    gameState.heliSquadron.forEach((heli, index) => {
-                        heli.targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
-                    });
-                    lastHeliX = leaderX;
+                if (!touch) {
+                    cleanupTouch();
+                    return;
                 }
+
+                const deltaX = touch.clientX - lastTouchX;
+                const sensitivity = 1.5;
                 
-                lastTouchX = touch.clientX;
+                try {
+                    if (gameState.heliSquadron.length === 1) {
+                        const heli = gameState.heliSquadron[0];
+                        const newTargetX = lastHeliX + (deltaX * sensitivity);
+                        const maxX = canvas.logicalWidth - 25;
+                        heli.targetX = Math.max(25, Math.min(maxX, newTargetX));
+                        lastHeliX = heli.targetX;
+                    } else {
+                        const squadronWidth = (gameState.heliSquadron.length - 1) * GAME_CONSTANTS.SQUADRON_SPACING;
+                        const maxX = canvas.logicalWidth - squadronWidth - 25;
+                        const newLeaderX = lastHeliX + (deltaX * sensitivity);
+                        const leaderX = Math.max(25, Math.min(maxX, newLeaderX));
+                        
+                        gameState.heliSquadron.forEach((heli, index) => {
+                            heli.targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
+                        });
+                        lastHeliX = leaderX;
+                    }
+                    
+                    lastTouchX = touch.clientX;
+                } catch (error) {
+                    console.error('Touch handling error:', error);
+                    cleanupTouch();
+                }
             }, { passive: false });
 
-            canvas.addEventListener('touchend', (e) => {
+            // Handle touch end and cancellation
+            const touchEndHandler = (e) => {
                 e.preventDefault();
-                lastTouchX = null;
-                lastHeliX = null;
-            }, { passive: false });
+                cleanupTouch();
+            };
+
+            canvas.addEventListener('touchend', touchEndHandler, { passive: false });
+            canvas.addEventListener('touchcancel', touchEndHandler, { passive: false });
+            
+            // Handle visibility change
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    cleanupTouch();
+                }
+            });
+
+            // Handle window blur
+            window.addEventListener('blur', cleanupTouch);
         }
 
-        // Handle game restart
+        // Handle game restart with both touch and pointer events
         const handleInteraction = (e) => {
             e.preventDefault();
             if (!gameState.active) {
@@ -811,7 +937,11 @@
         };
 
         // Add pointer event listener for restart
-        canvas.addEventListener('pointerdown', handleInteraction);
+        canvas.addEventListener('pointerdown', (e) => {
+            if (!touchActive) {
+                handleInteraction(e);
+            }
+        });
 
         // Prevent default touch behaviors
         canvas.style.touchAction = 'none';
