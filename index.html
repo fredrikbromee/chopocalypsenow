@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chopocalypse Now</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+            touch-action: none; /* Prevents default touch behaviors */
+            -webkit-touch-callout: none; /* Prevents callout on long-press */
+            -webkit-user-select: none; /* Prevents text selection */
+            user-select: none;
+        }
+
+        #gameCanvas {
+            display: block;
+            touch-action: none;
+        }
+
+        #score, #gameOver, #gameClear {
+            position: absolute;
+            font-size: 24px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        #score {
+            top: 10px;
+            left: 10px;
+            z-index: 1;
+        }
+
+        #gameOver, #gameClear {
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            text-align: center;
+            background-color: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 2;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="score">Score: 0</div>
+    <div id="gameOver">
+        Game Over<br>
+        Final Score: <span id="finalScore"></span><br>
+        Tap to Restart
+    </div>
+    <div id="gameClear">
+        Game Cleared!<br>
+        Congratulations!<br>
+        Tap to Restart
+    </div>
+
+    <script>
+        // Game Constants
+        const GAME_CONSTANTS = {
+            BASE_DIFFICULTY: 1,
+            HELICOPTER_SIZE: 50,
+            BULLET_SIZE: 5,
+            BULLET_SPEED: 7,
+            SQUADRON_SPACING: 40,
+            BASE_HEIGHT: window.innerHeight - 120,
+            SPAWN_RATE: 0.06,
+            POWER_UP_SPAWN_RATE: 0.01,
+            SHOOT_COOLDOWN: 200,
+            TARGET_FPS: 60,
+            TITLE_Y: 150 // Position for the title
+        };
+
+        // Mobile device detection
+        const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+        // Game State
+        const gameState = {
+            score: 0,
+            active: true,
+            difficulty: 1,
+            emojiClusters: [],
+            bullets: [],
+            powerUps: [],
+            backgroundStars: [],
+            heliSquadron: [],
+            particles: []
+        };
+
+        // Canvas setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        
+        // Handle high DPI displays
+        function setupCanvas() {
+            // Ensure we get the correct viewport dimensions on iOS
+            const viewportWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+            const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            const dpr = window.devicePixelRatio || 1;
+            
+            // Set canvas size to viewport dimensions
+            canvas.style.width = `${viewportWidth}px`;
+            canvas.style.height = `${viewportHeight}px`;
+            
+            // Set actual canvas dimensions accounting for device pixel ratio
+            canvas.width = viewportWidth * dpr;
+            canvas.height = viewportHeight * dpr;
+            
+            // Scale the canvas
+            ctx.scale(dpr, dpr);
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center';
+
+            // Store the logical (CSS) dimensions for game calculations
+            canvas.logicalWidth = viewportWidth;
+            canvas.logicalHeight = viewportHeight;
+        }
+        
+        setupCanvas();
+
+        // DOM elements
+        const scoreElement = document.getElementById('score');
+        const gameOverElement = document.getElementById('gameOver');
+        const gameClearElement = document.getElementById('gameClear');
+        const finalScoreElement = document.getElementById('finalScore');
+
+        // Game objects
+        let emojiClusters = [];
+        let bullets = [];
+        let backgroundStars = [];
+        let powerUps = [];
+        
+        const emojiList = ['👨', '👩', '🐶', '🐱', '🍎', '🍌', '🚗', '✈️', 
+                          '🎈', '⚽️', '🍕', '🍺', '🎃', '👻', '🤖', '🦄', '🌙', '🔥'];
+
+        // Emoji color themes
+        const emojiColors = {
+            '👨': '#ffd700',    // Human - gold
+            '👩': '#ffd700',    // Human - gold
+            '🐶': '#8b4513',    // Animals - brown
+            '🐱': '#8b4513',    // Animals - brown
+            '🍎': '#ff4444',    // Food - red
+            '🍌': '#ffeb3b',    // Food - yellow
+            '🚗': '#2196f3',    // Vehicles - blue
+            '✈️': '#2196f3',    // Vehicles - blue
+            '🎈': '#ff4081',    // Fun items - pink
+            '⚽️': '#ffffff',    // Sports - white
+            '🍕': '#ff9800',    // Food - orange
+            '🍺': '#ffd700',    // Drinks - gold
+            '🎃': '#ff9800',    // Halloween - orange
+            '👻': '#e0e0e0',    // Spooky - light gray
+            '🤖': '#607d8b',    // Tech - blue gray
+            '🦄': '#e91e63',    // Fantasy - pink
+            '🌙': '#90caf9',    // Nature - light blue
+            '🔥': '#ff5722'     // Fire - deep orange
+        };
+
+        // Game Classes
+        class EmojiCluster {
+            constructor(isLarge = false) {
+                this.x = Math.random() * canvas.logicalWidth;
+                this.y = -50;
+                this.speed = (1 + Math.random() * 2) * gameState.difficulty;
+                this.size = 30;
+                this.emojis = [];
+                
+                // More balanced screen size scaling
+                const screenSizeFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 1000));
+                const baseClusterSize = isLarge ? 25 : 8;
+                const clusterSize = Math.max(2, Math.floor(baseClusterSize * screenSizeFactor));
+                
+                // Adjusted spread scaling
+                const spreadFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 800));
+                const maxSpread = isLarge ? 200 : 60;
+                
+                for (let i = 0; i < clusterSize; i++) {
+                    const emoji = emojiList[Math.floor(Math.random() * emojiList.length)];
+                    this.emojis.push({
+                        emoji: emoji,
+                        color: emojiColors[emoji],
+                        offsetX: (Math.random() - 0.5) * (maxSpread * spreadFactor),
+                        offsetY: (Math.random() - 0.5) * (maxSpread * spreadFactor)
+                    });
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.font = `${this.size}px Arial`;
+                this.emojis.forEach(e => {
+                    ctx.fillStyle = e.color;
+                    ctx.fillText(e.emoji, this.x + e.offsetX, this.y + e.offsetY);
+                });
+                ctx.restore();
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > canvas.logicalHeight + 50) {
+                    const index = emojiClusters.indexOf(this);
+                    if (index !== -1) emojiClusters.splice(index, 1);
+                }
+            }
+        }
+
+        class Bullet {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.speed = GAME_CONSTANTS.BULLET_SPEED;
+                this.size = GAME_CONSTANTS.BULLET_SIZE;
+                this.color = 'cyan';
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            update() {
+                this.y -= this.speed;
+                if (this.y < 0) {
+                    const index = gameState.bullets.indexOf(this);
+                    if (index !== -1) gameState.bullets.splice(index, 1);
+                }
+            }
+        }
+
+        class PowerUp {
+            constructor() {
+                this.x = Math.random() * canvas.logicalWidth;
+                this.y = -30;
+                this.speed = 2;
+                this.size = 30;
+                this.health = 3; // Needs to be shot 3 times
+            }
+
+            draw() {
+                ctx.save();
+                ctx.font = `${this.size}px Arial`;
+                // Show remaining health as a number
+                ctx.fillStyle = 'white';
+                ctx.font = '16px Arial';
+                ctx.fillText(this.health, this.x, this.y - 20);
+                ctx.font = `${this.size}px Arial`;
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'center';
+                ctx.fillText('🚁', this.x, this.y);
+                ctx.restore();
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > canvas.logicalHeight) {
+                    const index = gameState.powerUps.indexOf(this);
+                    if (index !== -1) gameState.powerUps.splice(index, 1);
+                }
+            }
+        }
+
+        class Helicopter {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.targetX = x;
+                this.targetY = y;
+                this.size = 50;
+                this.baseY = y;
+                this.hoverOffset = Math.random() * Math.PI * 2; // Random start phase
+                this.hoverSpeed = 0.05;
+                this.hoverAmount = 5;
+                this.lastShootTime = Date.now();
+                this.shootCooldown = 200;
+            }
+
+            draw() {
+                // Update hover effect
+                this.hoverOffset += this.hoverSpeed;
+                this.y = this.baseY + Math.sin(this.hoverOffset) * this.hoverAmount;
+                
+                ctx.save();
+                ctx.font = `${this.size}px Arial`;
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'center';
+                ctx.fillText('🚁', this.x, this.y);
+                ctx.restore();
+            }
+
+            update() {
+                // Move towards target position
+                const dx = this.targetX - this.x;
+                const dy = this.targetY - this.y;
+                this.x += dx * 0.1;
+                this.baseY += dy * 0.1;
+
+                // Auto-shooting
+                const currentTime = Date.now();
+                if (currentTime - this.lastShootTime >= this.shootCooldown) {
+                    this.shoot();
+                    this.lastShootTime = currentTime;
+                }
+            }
+
+            shoot() {
+                gameState.bullets.push(new Bullet(this.x, this.y - this.size/2));
+            }
+
+            setTarget(x, y) {
+                this.targetX = x;
+                this.targetY = y;
+            }
+        }
+
+        class BackgroundStar {
+            constructor() {
+                this.x = Math.random() * canvas.logicalWidth;
+                this.y = Math.random() * canvas.logicalHeight;
+                this.size = Math.random() * 2;
+                this.speed = 0.1 + Math.random() * 0.5;
+                this.brightness = Math.random() < 0.3 ? 1 : 0.3; // 30% chance of bright star
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.brightness})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > canvas.logicalHeight) {
+                    this.y = 0;
+                    this.x = Math.random() * canvas.logicalWidth;
+                }
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.size = Math.random() * 3 + 1;
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 5 + 2;
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+                this.alpha = 1;
+                this.fadeSpeed = 0.02;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.alpha -= this.fadeSpeed;
+                this.vy += 0.1; // Add gravity effect
+            }
+
+            isDead() {
+                return this.alpha <= 0;
+            }
+        }
+
+        // Game Logic Functions
+        function spawnEmojiCluster() {
+            // More balanced spawn rate scaling
+            const screenSizeFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 1000));
+            const baseSpawnRate = GAME_CONSTANTS.SPAWN_RATE;
+            const adjustedSpawnRate = baseSpawnRate * screenSizeFactor;
+            
+            if (Math.random() < adjustedSpawnRate) {
+                gameState.emojiClusters.push(new EmojiCluster(Math.random() < 0.25));
+            }
+        }
+
+        function spawnPowerUp() {
+            // Adjusted power-up spawn rate
+            const screenSizeFactor = Math.min(1, Math.sqrt(canvas.logicalWidth / 1000));
+            const baseSpawnRate = GAME_CONSTANTS.POWER_UP_SPAWN_RATE;
+            const adjustedSpawnRate = baseSpawnRate * (1 + (1 - screenSizeFactor) * 0.3);
+            
+            if (Math.random() < adjustedSpawnRate && gameState.powerUps.length < 1) {
+                gameState.powerUps.push(new PowerUp());
+            }
+        }
+
+        function createExplosion(x, y, color, particleCount = 30) {
+            // Create particles for the explosion
+            for (let i = 0; i < particleCount; i++) {
+                gameState.particles.push(new Particle(x, y, color));
+            }
+        }
+
+        function checkCollisions() {
+            // Use a grid-based approach for collision detection
+            const gridSize = 50;
+            const grid = {};
+            
+            // Add emojis to grid
+            gameState.emojiClusters.forEach((cluster, clusterIndex) => {
+                cluster.emojis.forEach((e, emojiIndex) => {
+                    const emojiX = Math.floor((cluster.x + e.offsetX) / gridSize);
+                    const emojiY = Math.floor((cluster.y + e.offsetY) / gridSize);
+                    const key = `${emojiX},${emojiY}`;
+                    if (!grid[key]) grid[key] = [];
+                    grid[key].push({ type: 'emoji', cluster: clusterIndex, emoji: emojiIndex });
+                });
+            });
+            
+            // Check helicopter collisions using grid
+            gameState.heliSquadron.forEach((heli, heliIndex) => {
+                const heliGridX = Math.floor(heli.x / gridSize);
+                const heliGridY = Math.floor(heli.y / gridSize);
+                
+                // Check surrounding grid cells
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        const key = `${heliGridX + dx},${heliGridY + dy}`;
+                        if (grid[key]) {
+                            grid[key].forEach(obj => {
+                                if (obj.type === 'emoji') {
+                                    const cluster = gameState.emojiClusters[obj.cluster];
+                                    if (!cluster) return;
+                                    
+                                    const e = cluster.emojis[obj.emoji];
+                                    if (!e) return;
+                                    
+                                    const emojiX = cluster.x + e.offsetX;
+                                    const emojiY = cluster.y + e.offsetY;
+                                    
+                                    // Calculate distance between helicopter center and emoji center
+                                    const dx = heli.x - emojiX;
+                                    const dy = heli.y - emojiY;
+                                    const distance = Math.sqrt(dx * dx + dy * dy);
+                                    
+                                    // Use circular collision detection with adjusted hit radius
+                                    const heliRadius = heli.size * 0.3; // Make hitbox smaller than visual size
+                                    const emojiRadius = cluster.size * 0.4; // Make hitbox smaller than visual size
+                                    
+                                    if (distance < heliRadius + emojiRadius) {
+                                        removeHelicopter(heliIndex);
+                                        cluster.emojis = cluster.emojis.filter(emoji => emoji !== e);
+                                        createExplosion(emojiX, emojiY, e.color, 30);
+                                        if (cluster.emojis.length === 0) {
+                                            gameState.emojiClusters.splice(obj.cluster, 1);
+                                        }
+                                        return;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+            
+            // Check bullet collisions
+            gameState.bullets.forEach((bullet, bulletIndex) => {
+                const bulletGridX = Math.floor(bullet.x / gridSize);
+                const bulletGridY = Math.floor(bullet.y / gridSize);
+                const key = `${bulletGridX},${bulletGridY}`;
+                
+                if (grid[key]) {
+                    grid[key].forEach(obj => {
+                        if (obj.type === 'emoji') {
+                            const cluster = gameState.emojiClusters[obj.cluster];
+                            if (!cluster) return;
+                            
+                            const e = cluster.emojis[obj.emoji];
+                            if (!e) return;
+                            
+                            const emojiX = cluster.x + e.offsetX;
+                            const emojiY = cluster.y + e.offsetY;
+                            
+                            // Calculate distance between bullet and emoji center
+                            const dx = bullet.x - emojiX;
+                            const dy = bullet.y - emojiY;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            
+                            // If bullet is within emoji's circular hit area
+                            if (distance < cluster.size) {
+                                cluster.emojis.splice(obj.emoji, 1);
+                                gameState.bullets.splice(bulletIndex, 1);
+                                createExplosion(emojiX, emojiY, e.color, 20);
+                                gameState.score++;
+                                updateScore();
+                                if (cluster.emojis.length === 0) {
+                                    gameState.emojiClusters.splice(obj.cluster, 1);
+                                }
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            
+            // Check power-up collisions with bullets
+            gameState.powerUps.forEach((powerUp, powerUpIndex) => {
+                gameState.bullets.some((bullet, bulletIndex) => {
+                    if (bullet.x > powerUp.x &&
+                        bullet.x < powerUp.x + powerUp.size &&
+                        bullet.y > powerUp.y - powerUp.size &&
+                        bullet.y < powerUp.y) {
+                        gameState.bullets.splice(bulletIndex, 1);
+                        powerUp.health--;
+                        
+                        if (powerUp.health <= 0) {
+                            gameState.powerUps.splice(powerUpIndex, 1);
+                            addHelicopter();
+                        }
+                        return true;
+                    }
+                    return false;
+                });
+            });
+        }
+
+        function updateScore() {
+            scoreElement.textContent = `Score: ${gameState.score}`;
+            gameState.difficulty = 1 + Math.floor(gameState.score / 100) * 0.1;
+            if (gameState.score >= 1000) gameClear();
+        }
+
+        function gameOver() {
+            gameState.active = false;
+            gameOverElement.style.display = 'block';
+            finalScoreElement.textContent = gameState.score;
+        }
+
+        function gameClear() {
+            gameState.active = false;
+            gameClearElement.style.display = 'block';
+        }
+
+        function resetGame() {
+            gameState.score = 0;
+            gameState.emojiClusters = [];
+            gameState.bullets = [];
+            gameState.powerUps = [];
+            gameState.heliSquadron = [];
+            gameState.particles = [];
+            addHelicopter(); // Start with one helicopter
+            gameState.active = true;
+            gameState.difficulty = 1;
+            gameOverElement.style.display = 'none';
+            gameClearElement.style.display = 'none';
+            updateScore();
+        }
+
+        function drawBackground() {
+            // Use semi-transparent black for trail effect
+            ctx.fillStyle = `rgba(0, 0, 0, ${gameState.active ? (('ontouchstart' in window) || (navigator.maxTouchPoints > 0) ? 0.2 : 0.1) : 0.5}`; // Slightly faster fade on mobile
+            ctx.fillRect(0, 0, canvas.logicalWidth, canvas.logicalHeight);
+            
+            // Draw only visible stars (pre-filtered for mobile)
+            gameState.backgroundStars.forEach(star => {
+                star.draw();
+                star.update();
+            });
+        }
+
+        function updateSquadronFormation() {
+            const squadronSize = gameState.heliSquadron.length;
+            
+            // If there's only one helicopter, keep it at its current X position
+            if (squadronSize === 1) {
+                gameState.heliSquadron[0].setTarget(gameState.heliSquadron[0].x, GAME_CONSTANTS.BASE_HEIGHT);
+                return;
+            }
+            
+            // For multiple helicopters, maintain their relative positions to the leader
+            const leaderX = gameState.heliSquadron[0].x;
+            gameState.heliSquadron.forEach((heli, index) => {
+                const targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
+                heli.setTarget(targetX, GAME_CONSTANTS.BASE_HEIGHT);
+            });
+        }
+
+        function addHelicopter() {
+            const squadronSize = gameState.heliSquadron.length;
+            const spacing = 40;
+            const baseHeight = canvas.logicalHeight - 120;
+            
+            let spawnX;
+            if (squadronSize === 0) {
+                // First helicopter spawns in the middle
+                spawnX = canvas.logicalWidth / 2;
+            } else {
+                // New helicopters spawn to the right of the last one
+                const lastHeli = gameState.heliSquadron[squadronSize - 1];
+                spawnX = lastHeli.x + spacing;
+            }
+            
+            const newHeli = new Helicopter(spawnX, baseHeight);
+            newHeli.baseY = baseHeight;
+            gameState.heliSquadron.push(newHeli);
+        }
+
+        function removeHelicopter(index) {
+            const heli = gameState.heliSquadron[index];
+            createExplosion(heli.x, heli.y, '#ff4444', 50); // Red explosion for helicopters
+            gameState.heliSquadron.splice(index, 1);
+            if (gameState.heliSquadron.length === 0) {
+                gameOver();
+            }
+        }
+
+        // Initialize with one helicopter
+        addHelicopter();
+
+        // Optimize game loop with frame limiting
+        let lastFrameTime = 0;
+        const targetFPS = 60;
+        const frameInterval = 1000 / targetFPS;
+
+        function drawTitle() {
+            const titleY = GAME_CONSTANTS.TITLE_Y;
+            ctx.save();
+            
+            // Draw main title
+            ctx.font = 'bold 48px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            // Create gradient for text
+            const gradient = ctx.createLinearGradient(
+                canvas.logicalWidth / 2 - 150,
+                titleY - 25,
+                canvas.logicalWidth / 2 + 150,
+                titleY + 25
+            );
+            gradient.addColorStop(0, '#ff4444');
+            gradient.addColorStop(0.5, '#ffeb3b');
+            gradient.addColorStop(1, '#ff4444');
+            
+            // Add shadow for depth
+            ctx.shadowColor = 'rgba(255, 0, 0, 0.5)';
+            ctx.shadowBlur = 15;
+            ctx.shadowOffsetX = 3;
+            ctx.shadowOffsetY = 3;
+            
+            // Draw the text
+            ctx.fillStyle = gradient;
+            ctx.fillText('CHOPOCALYPSE', canvas.logicalWidth / 2, titleY);
+            
+            // Draw "NOW" with different style
+            ctx.font = 'bold italic 36px Arial';
+            ctx.fillStyle = '#ff4444';
+            ctx.fillText('NOW', canvas.logicalWidth / 2, titleY + 45);
+            
+            // Draw helicopter icons
+            ctx.font = '32px Arial';
+            ctx.fillText('🚁', canvas.logicalWidth / 2 - 120, titleY);
+            ctx.fillText('🚁', canvas.logicalWidth / 2 + 120, titleY);
+            
+            ctx.restore();
+        }
+
+        function gameLoop(timestamp) {
+            // Limit frame rate
+            const elapsed = timestamp - lastFrameTime;
+            if (elapsed < frameInterval) {
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+            lastFrameTime = timestamp - (elapsed % frameInterval);
+            
+            drawBackground();
+
+            if (gameState.active) {
+                // Update and remove dead particles
+                gameState.particles = gameState.particles.filter(particle => {
+                    particle.update();
+                    particle.draw();
+                    return !particle.isDead();
+                });
+
+                // Batch similar operations together for better performance
+                // Update all positions first
+                gameState.bullets.forEach(bullet => bullet.update());
+                gameState.emojiClusters.forEach(cluster => cluster.update());
+                gameState.powerUps.forEach(powerUp => powerUp.update());
+                gameState.heliSquadron.forEach(heli => heli.update());
+                
+                // Then do all the drawing
+                gameState.bullets.forEach(bullet => bullet.draw());
+                gameState.emojiClusters.forEach(cluster => cluster.draw());
+                gameState.powerUps.forEach(powerUp => powerUp.draw());
+                gameState.heliSquadron.forEach(heli => heli.draw());
+
+                // Spawn new elements and check collisions
+                if (Math.random() < 1) {
+                    spawnEmojiCluster();
+                    spawnPowerUp();
+                    checkCollisions();
+                }
+            } else {
+                // Draw title when game is not active
+                drawTitle();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Event Listeners
+        canvas.addEventListener('pointermove', (e) => {
+            if (gameState.active && gameState.heliSquadron.length > 0) {
+                const rect = canvas.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                
+                // Calculate the pointer position relative to the canvas, accounting for scaling
+                const pointerX = ((e.clientX - rect.left) / rect.width) * canvas.logicalWidth;
+                
+                // Different handling for single helicopter vs squadron
+                if (gameState.heliSquadron.length === 1) {
+                    // For single helicopter, just keep it within screen bounds
+                    const maxX = canvas.logicalWidth - 25; // Only small offset to keep helicopter visible
+                    const targetX = Math.max(25, Math.min(maxX, pointerX));
+                    gameState.heliSquadron[0].setTarget(targetX, gameState.heliSquadron[0].targetY);
+                } else {
+                    // Squadron formation handling
+                    const squadronWidth = (gameState.heliSquadron.length - 1) * GAME_CONSTANTS.SQUADRON_SPACING;
+                    const maxX = canvas.logicalWidth - squadronWidth - 25;
+                    const minX = 25;
+                    const leaderX = Math.max(minX, Math.min(maxX, pointerX));
+                    
+                    gameState.heliSquadron.forEach((heli, index) => {
+                        const targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
+                        heli.setTarget(targetX, heli.targetY);
+                    });
+                }
+            }
+        });
+
+        // Add touch-specific event handling for better iOS support
+        if (isTouchDevice) {
+            let lastTouchX = null;
+            let lastHeliX = null;
+            
+            canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (!gameState.active || !gameState.heliSquadron.length) return;
+                
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                lastTouchX = touch.clientX;
+                lastHeliX = gameState.heliSquadron[0].x;
+            }, { passive: false });
+
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                if (!gameState.active || !gameState.heliSquadron.length || lastTouchX === null || lastHeliX === null) return;
+
+                const touch = e.touches[0];
+                const deltaX = touch.clientX - lastTouchX;
+                const sensitivity = 1.5; // Slightly increased sensitivity for smoother movement
+                
+                if (gameState.heliSquadron.length === 1) {
+                    const heli = gameState.heliSquadron[0];
+                    const newTargetX = lastHeliX + (deltaX * sensitivity);
+                    const maxX = canvas.logicalWidth - 25;
+                    heli.targetX = Math.max(25, Math.min(maxX, newTargetX));
+                    lastHeliX = heli.targetX;
+                } else {
+                    const leader = gameState.heliSquadron[0];
+                    const squadronWidth = (gameState.heliSquadron.length - 1) * GAME_CONSTANTS.SQUADRON_SPACING;
+                    const maxX = canvas.logicalWidth - squadronWidth - 25;
+                    const newLeaderX = lastHeliX + (deltaX * sensitivity);
+                    const leaderX = Math.max(25, Math.min(maxX, newLeaderX));
+                    
+                    gameState.heliSquadron.forEach((heli, index) => {
+                        heli.targetX = leaderX + (index * GAME_CONSTANTS.SQUADRON_SPACING);
+                    });
+                    lastHeliX = leaderX;
+                }
+                
+                lastTouchX = touch.clientX;
+            }, { passive: false });
+
+            canvas.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                lastTouchX = null;
+                lastHeliX = null;
+            }, { passive: false });
+        }
+
+        // Handle game restart
+        const handleInteraction = (e) => {
+            e.preventDefault();
+            if (!gameState.active) {
+                resetGame();
+            }
+        };
+
+        // Add pointer event listener for restart
+        canvas.addEventListener('pointerdown', handleInteraction);
+
+        // Prevent default touch behaviors
+        canvas.style.touchAction = 'none';
+
+        // Handle window resizing
+        window.addEventListener('resize', () => {
+            // Add small delay to ensure correct dimensions on iOS
+            setTimeout(() => {
+                setupCanvas();
+                gameState.heliSquadron.forEach(heli => {
+                    heli.baseY = canvas.logicalHeight - 80;
+                    // Ensure helicopters stay within new screen bounds
+                    heli.targetX = Math.min(heli.targetX, canvas.logicalWidth - heli.size);
+                });
+            }, 100);
+        });
+
+        // Initialize background stars with mobile optimization
+        const starCount = isTouchDevice ? 50 : 100;
+        for (let i = 0; i < starCount; i++) {
+            const star = new BackgroundStar();
+            // Pre-filter dim stars on mobile
+            if (!isTouchDevice || star.brightness > 0.5) {
+                gameState.backgroundStars.push(star);
+            }
+        }
+
+        // Start the game
+        gameLoop();
+    </script>
+</body>
+</html>
